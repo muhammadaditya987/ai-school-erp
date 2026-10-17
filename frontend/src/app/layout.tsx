@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
+import { Providers } from "@/components/providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "School ERP",
-  description: "A secure, connected workspace for school operations.",
+  description: "Ruang kerja yang aman dan terhubung untuk operasional sekolah.",
 };
 
 export default function RootLayout({
@@ -12,8 +13,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="id">
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

@@ -4,11 +4,13 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.core.redis_client import redis_client
 from app.db.session import engine
 
 settings = get_settings()
@@ -19,6 +21,7 @@ logger = logging.getLogger("school_erp.request")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
+    await redis_client.aclose()
     await engine.dispose()
 
 
@@ -30,6 +33,14 @@ app = FastAPI(
     docs_url=f"{settings.api_v1_prefix}/docs",
     redoc_url=f"{settings.api_v1_prefix}/redoc",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

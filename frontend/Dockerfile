@@ -5,6 +5,8 @@ RUN npm ci
 
 FROM node:22-alpine AS builder
 WORKDIR /app
+ARG API_INTERNAL_URL=http://localhost:8000/api/v1
+ENV API_INTERNAL_URL=${API_INTERNAL_URL}
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

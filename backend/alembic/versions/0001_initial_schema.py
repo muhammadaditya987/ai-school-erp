@@ -5,9 +5,7 @@ Revises:
 Create Date: 2026-10-15
 """
 
-from typing import Sequence
-
-from alembic import op
+from collections.abc import Sequence
 
 revision: str = "0001_initial_schema"
 down_revision: str | None = None

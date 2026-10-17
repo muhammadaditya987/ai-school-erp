@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-school_erp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,8 +36,8 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-school_erp}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?Set RABBITMQ_DEFAULT_PASS in .env}
     ports:
-      - "127.0.0.1:5672:5672"
-      - "127.0.0.1:15672:15672"
+      - "127.0.0.1:${RABBITMQ_HOST_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_HOST_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -46,6 +46,45 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+
+  localstack:
+    image: localstack/localstack:4.4.0
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: ${S3_REGION:-ap-southeast-1}
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-test-secret}
+      PERSISTENCE: "1"
+    ports:
+      - "127.0.0.1:${S3_HOST_PORT:-4566}:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  s3-init:
+    image: amazon/aws-cli:2.27.41
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_DEFAULT_REGION: ${S3_REGION:-ap-southeast-1}
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-test-secret}
+      S3_BUCKET: ${S3_BUCKET:-school-erp}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        aws --endpoint-url=http://localstack:4566 s3api head-bucket
+        --bucket "$${S3_BUCKET}"
+        || aws --endpoint-url=http://localstack:4566 s3api create-bucket
+        --bucket "$${S3_BUCKET}" --create-bucket-configuration
+        LocationConstraint="$${AWS_DEFAULT_REGION}"
+    restart: "no"
 
   backend:
     build:
@@ -56,8 +95,29 @@ services:
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://school_erp:change-this-local-password@rabbitmq:5672/}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-replace-with-a-random-secret-of-at-least-32-characters}
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://localstack:4566}
+      S3_BUCKET: ${S3_BUCKET:-school-erp}
+      S3_REGION: ${S3_REGION:-ap-southeast-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-test}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-test-secret}
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      AI_API_KEY: ${AI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      HUGGINGFACE_API_TOKEN: ${HUGGINGFACE_API_TOKEN:-}
+      HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-mistralai/Mistral-7B-Instruct-v0.3}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      CHROMA_PERSIST_DIRECTORY: /data/chroma
+      EMBEDDING_CACHE_DIRECTORY: /data/embedding-cache
+      FASTEMBED_CACHE_PATH: /data/embedding-cache
       APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - chroma_data:/data/chroma
+      - embedding_cache:/data/embedding-cache
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -67,6 +127,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=2)"]
       interval: 10s
@@ -74,9 +136,53 @@ services:
       retries: 5
     restart: unless-stopped
 
+  worker:
+    build:
+      context: ./backend
+    command: ["celery", "-A", "app.worker:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://school_erp:change-this-local-password@postgres:5432/school_erp}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://school_erp:change-this-local-password@rabbitmq:5672/}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-replace-with-a-random-secret-of-at-least-32-characters}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://localstack:4566}
+      S3_BUCKET: ${S3_BUCKET:-school-erp}
+      S3_REGION: ${S3_REGION:-ap-southeast-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-test}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-test-secret}
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      AI_API_KEY: ${AI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      HUGGINGFACE_API_TOKEN: ${HUGGINGFACE_API_TOKEN:-}
+      HUGGINGFACE_MODEL: ${HUGGINGFACE_MODEL:-mistralai/Mistral-7B-Instruct-v0.3}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      CHROMA_PERSIST_DIRECTORY: /data/chroma
+      EMBEDDING_CACHE_DIRECTORY: /data/embedding-cache
+      FASTEMBED_CACHE_PATH: /data/embedding-cache
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - chroma_data:/data/chroma
+      - embedding_cache:/data/embedding-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
+      args:
+        API_INTERNAL_URL: http://backend:8000/api/v1
     environment:
       NODE_ENV: production
       API_INTERNAL_URL: http://backend:8000/api/v1
@@ -87,7 +193,53 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  nginx:
+    image: nginx:1.28-alpine
+    ports:
+      - "127.0.0.1:${NGINX_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.11.10
+    profiles: ["ai-local"]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  mcp:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.mcp_server"]
+    profiles: ["mcp"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://school_erp:change-this-local-password@postgres:5432/school_erp}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-replace-with-a-random-secret-of-at-least-32-characters}
+      MCP_ACCESS_TOKEN: ${MCP_ACCESS_TOKEN:-}
+      CHROMA_PERSIST_DIRECTORY: /data/chroma
+      EMBEDDING_CACHE_DIRECTORY: /data/embedding-cache
+    volumes:
+      - chroma_data:/data/chroma
+      - embedding_cache:/data/embedding-cache
+    stdin_open: true
+    tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  localstack_data:
+  chroma_data:
+  embedding_cache:
+  ollama_data:

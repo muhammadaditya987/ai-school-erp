@@ -31,9 +31,17 @@ export default function Home() {
           </span>
           <span className="text-base font-semibold tracking-tight text-ink">School ERP</span>
         </Link>
-        <span className="hidden rounded-full border border-ink/10 px-4 py-2 text-sm text-ink/65 sm:inline-flex">
-          A better-connected school day
-        </span>
+        <nav aria-label="Navigasi akun" className="flex items-center gap-4 text-sm">
+          <Link className="font-medium text-ink/65 hover:text-forest" href="/login">
+            Masuk
+          </Link>
+          <Link
+            className="rounded-full bg-forest px-4 py-2 font-semibold text-white hover:bg-ink"
+            href="/register"
+          >
+            Daftarkan sekolah
+          </Link>
+        </nav>
       </header>
 
       <section className="mx-auto grid w-full max-w-7xl gap-14 px-6 pb-20 pt-14 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:px-10 lg:pb-28 lg:pt-20">
